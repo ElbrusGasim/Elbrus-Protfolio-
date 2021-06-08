@@ -1,6 +1,6 @@
 ---
 title: "Classification"
-author: "Elbrus Gasimov, Gunneet Singh"
+author: "Elbrus Gasimov"
 date: "5/31/2021"
 output: html_document
 ---

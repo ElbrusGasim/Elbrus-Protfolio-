@@ -1,0 +1,704 @@
+---
+title: "Time-Series Metrics on Covid-19 Death Cases in California"
+author: "Elbrus Gasimov, Alberto Delgado Lopez"
+date: "6/2/2021"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    code_folding: hide
+    keep_md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+## Abstract
+
+## Introduction 
+
+The idea of this work is to study and analyse, using time series metrics, the most recent data on Covid-19 deaths in the state of California. The main goal is to compare different Autoregressive Distributed Lag (ARDL) and Autoregressive Integrated Moving Average (ARIMA) models and choose the one that will describe our data the best way.
+
+Additionally, while building the models, two main hypothesis will be solved:
+- First main hypothesis: number of deaths will significantly decrease during next month
+- Secondary hypothesis: number of deaths is highly related with the cases of a demographic group
+
+## Literature review
+
+
+## Data
+
+### Libraries
+
+```{r}
+source("function_testdf2.R")
+source("function_import_data_into_xts.R")
+# libraries
+requiredPackages = c("lmtest","fBasics","urca","xts","forecast", "quantmod", "reshape2", "dynlm")
+
+for(i in requiredPackages){if(!require(i,character.only = TRUE)) install.packages(i)}
+for(i in requiredPackages){if(!require(i,character.only = TRUE)) library(i,character.only = TRUE)}
+
+options(scipen=4)
+```
+
+### Description of the data
+
+Our Dataset is about Covid Cases in US, California. It is a daily data and it comes from the 'California health and human services open data portal':
+
+https://data.chhs.ca.gov/dataset/covid-19-time-series-metrics-by-county-and-state
+
+The data is divided in two files:
+
+- "covid19cases_test.csv" with reported death and cases of Covid-19 in the state of California since 2020 until present (last update May 22, 2021), it also includes information about the area, population, total number of tests, positive tests... From here, we are only interested in the total number of deaths, not divided by area, but from the sum of all the areas (whole California).
+
+- "covid19casesdemographics.csv" with reported number of death and cases of Covid-19 in the state of California since 2020 until present (last update May 22, 2021). This dataset is divided in demographic groups. We are intereseted in the daily data of Covid cases for each demographic group.
+
+### Exploratory data analysis
+Lets load the datasets, analyse the data, do a little bit of cleaning and reorganize variables.
+
+First file:
+```{r}
+covid <- read.csv("main_case.csv", # name of the file
+                header = T,  	# if first row doesn't contain variable names: header=F'
+                sep = ",", 	  # sign used as columns separator
+                dec = ".")	  # sign used as decimal place separator
+
+covid$date <- as.Date(covid$date, "%Y-%m-%d")
+head(covid)
+summary(covid)
+
+covid<-covid[,c(1,6)]
+covid<-na.omit(covid)
+covid<-aggregate(covid[,-1], by = list(covid$date), FUN = sum)
+names(covid) <- c("date","deaths")
+
+head(covid)
+summary(covid)
+```
+Second file:
+```{r}
+coviddemo <- read.csv("domographics.csv", header = T, sep = ",", dec = ".")
+head(coviddemo)
+
+coviddemo$report_date <- as.Date(coviddemo$report_date, "%Y-%m-%d")
+
+coviddemo$demographic_value <- ifelse(coviddemo$demographic_value=="missing", "Missing", coviddemo$demographic_value)
+coviddemo$demographic_value <- ifelse(coviddemo$demographic_value=="Total" & coviddemo$demographic_category=="Age Group", "TotalAG", coviddemo$demographic_value)
+coviddemo$demographic_value <- ifelse(coviddemo$demographic_value=="Total" & coviddemo$demographic_category=="Gender", "TotalG", coviddemo$demographic_value)
+coviddemo$demographic_value <- ifelse(coviddemo$demographic_value=="Total" & coviddemo$demographic_category=="Race Ethnicity", "TotalRE", coviddemo$demographic_value)
+
+coviddemo = coviddemo[coviddemo$report_date>="2020-04-22",]
+covid = covid[covid$date>="2020-04-22",]
+
+democases <- dcast(coviddemo, report_date ~ demographic_value, value.var = 'total_cases')
+head(democases)
+```
+
+
+### Times Series objects
+
+Let's create the xts objects that we will use for our analysis
+
+```{r}
+covid <- xts(covid[,-1], order.by=covid$date)
+names(covid) <- c("deaths")
+plot(covid)
+
+democases <- xts(democases[,-c(1,12,15,16,17,18,19)], order.by=democases$report_date)
+democases$DEATHS <- covid$deaths
+names(democases) <- c("ag017","ag1849","ag5064","ag65","AIndianAlaska","Asian","Black","Female","Latino","Male","MultiR","HawaiianPacifIs","White","DEATHS")
+head(democases)
+plot(democases)
+```
+
+## Models
+
+### ARDL model
+
+#### Stationarity
+
+The first step for building any autorregressive model is to check the stationary of every variable which will be consider on it.
+
+- Independent variables:
+```{r}
+# Age group
+par(mfrow=c(2,2))
+plot(democases$ag017, main="0-17 cases")
+plot(democases$ag1849, main="18-49 cases")
+plot(democases$ag5064, main="50-64 cases")
+plot(democases$ag65, main="+65 cases")
+
+ndiffs(democases$ag017)
+ndiffs(democases$ag1849)
+ndiffs(democases$ag5064)
+ndiffs(democases$ag65)
+```
+From a first look it is obvious the linear increasing trend the data is presenting. This is a clear indicator of non-stationarity. Futhermore, the functions shows that 2 differencings are needed. Let's do the first one:
+
+```{r}
+par(mfrow=c(2,2))
+plot(diff.xts(democases$ag017), main="0-17 diff.cases")
+plot(diff.xts(democases$ag1849), main="18-49 diff.cases")
+plot(diff.xts(democases$ag5064), main="50-64 diff.cases")
+plot(diff.xts(democases$ag65), main="+65 diff.cases")
+```
+
+We suppose that since our data is cumulative, when we do 1 differencing we obtain daily number of cases.
+
+We will work now with the logarithm of the data to stabilize the variance which does not look good. But beforehand we will replace the zeros and negative values in our data with the means of neighbors.
+
+These negative values happen only during 1 or 2 days, depending on the variable, and some are very big negative values. We feel comfortable replacing them with the means of the neighbors since the possible reason for them could be that during those days there was a recounting and they readjusted the data, otherwise it wouldn't have sense for cumulative cases.
+
+```{r}
+diffdemocases<-diff.xts(democases)
+diffdemocases$DEATHS <- democases$DEATHS #let's not change the dependent variable
+
+for(i in 1:13){
+  for(n in which(diffdemocases[,i]<=0)){
+    if(is.na(diffdemocases[n-1,i])){diffdemocases[n,i]<-diffdemocases[n+1,i]}
+    else{diffdemocases[n,i]<- mean(c(diffdemocases[n-1,i],diffdemocases[n+1,i]))}
+  }
+}
+
+par(mfrow=c(2,2))
+plot(diffdemocases$ag017, main="0-17 diff.cases")
+plot(diffdemocases$ag1849, main="18-49 diff.cases")
+plot(diffdemocases$ag5064, main="50-64 diff.cases")
+plot(diffdemocases$ag65, main="+65 diff.cases")
+```
+Let's see now the log of the functions ans check if they need more differencings.
+
+```{r}
+par(mfrow=c(2,2))
+plot(log(diffdemocases$ag017), main="0-17 log.diff.cases")
+plot(log(diffdemocases$ag1849), main="18-49 log.diff.cases")
+plot(log(diffdemocases$ag5064), main="50-64 log.diff.cases")
+plot(log(diffdemocases$ag65), main="+65 log.diff.cases")
+
+ndiffs(log(diffdemocases$ag017))
+ndiffs(log(diffdemocases$ag1849))
+ndiffs(log(diffdemocases$ag5064))
+ndiffs(log(diffdemocases$ag65))
+```
+One more differencing is needed.
+
+```{r}
+logddemocases <- log(diffdemocases)
+logddemocases$DEATHS <- diffdemocases$DEATHS
+
+dlogddemocases<-diff.xts(logddemocases)
+dlogddemocases$DEATHS <- logddemocases$DEATHS
+
+par(mfrow=c(2,2))
+plot(dlogddemocases$ag017, main="0-17 diff.log.diff.cases")
+plot(dlogddemocases$ag1849, main="18-49 diff.log.diff.cases")
+plot(dlogddemocases$ag5064, main="50-64 diff.log.diff.cases")
+plot(dlogddemocases$ag65, main="+65 diff.log.diff.cases")
+```
+
+The data looks now stationary. Let's do the same process for the rest of variables.
+
+```{r, results = 'hide', fig.show='hide'}
+#Gender
+
+par(mfrow=c(2,1))
+plot(democases$Female, main="Female cases")
+plot(democases$Male, main="Male cases")
+
+par(mfrow=c(2,1))
+plot(diffdemocases$Female, main="Female diff.cases")
+plot(diffdemocases$Male, main="Male diff.cases")
+
+par(mfrow=c(2,1))
+plot(logddemocases$Female, main="Female log.diff.cases")
+plot(logddemocases$Male, main="Male log.diff.cases")
+
+par(mfrow=c(2,1))
+plot(dlogddemocases$Female, main="Female diff.log.diff.cases")
+plot(dlogddemocases$Male, main="Male diff.log.diff.cases")
+
+```
+
+```{r, results = 'hide', fig.show='hide'}
+#Race-Ethnicity
+
+par(mfrow=c(2,2))
+plot(democases$AIndianAlaska, main="AIndianAlaska")
+plot(democases$Asian, main="Asian")
+plot(democases$Black, main="Black")
+plot(democases$Latino, main="Latino")
+par(mfrow=c(2,2))
+plot(democases$MultiR, main="MultiR")
+plot(democases$HawaiianPacifIs, main="HawaiianPacifIs")
+plot(democases$White, main="White")
+
+par(mfrow=c(2,2))
+plot(diffdemocases$AIndianAlaska, main="diff.AIndianAlaska")
+plot(diffdemocases$Asian, main="diff.Asian")
+plot(diffdemocases$Black, main="diff.Black")
+plot(diffdemocases$Latino, main="diff.Latino")
+par(mfrow=c(2,2))
+plot(diffdemocases$MultiR, main="diff.MultiR")
+plot(diffdemocases$HawaiianPacifIs, main="diff.HawaiianPacifIs")
+plot(diffdemocases$White, main="diff.White")
+
+par(mfrow=c(2,2))
+plot(logddemocases$AIndianAlaska, main="log.diff.AIndianAlaska")
+plot(logddemocases$Asian, main="log.diff.Asian")
+plot(logddemocases$Black, main="log.diff.Black")
+plot(logddemocases$Latino, main="log.diff.Latino")
+par(mfrow=c(2,2))
+plot(logddemocases$MultiR, main="log.diff.MultiR")
+plot(logddemocases$HawaiianPacifIs, main="log.diff.HawaiianPacifIs")
+plot(logddemocases$White, main="log.diff.White")
+
+par(mfrow=c(2,2))
+plot(dlogddemocases$AIndianAlaska, main="diff.log.diff.AIndianAlaska")
+plot(dlogddemocases$Asian, main="diff.log.diff.Asian")
+plot(dlogddemocases$Black, main="diff.log.diff.Black")
+plot(dlogddemocases$Latino, main="diff.log.diff.Latino")
+par(mfrow=c(2,2))
+plot(dlogddemocases$MultiR, main="diff.log.diff.MultiR")
+plot(dlogddemocases$HawaiianPacifIs, main="diff.log.diff.HawaiianPacifIs")
+plot(dlogddemocases$White, main="diff.log.diff.White")
+```
+Finally all the independent variables look stationary in the object 'dlogddemocases'
+
+- Let's now make the dependent variable 'DEATHS' stationary:
+```{r}
+par(mfrow=c(1,1))
+stcovid <- dlogddemocases
+plot(stcovid$DEATHS)
+ndiffs(stcovid$DEATHS)
+```
+
+Only one differencing is needed:
+```{r}
+stcovid$DEATHS <- diff.xts(stcovid$DEATHS)
+plot(stcovid$DEATHS)
+
+stcovid <- stcovid[-c(1,2)] #removed the NA's dued to differencing
+```
+
+Let's use some tests to check the stationarity of the data we have processed.
+
+- Dependent variable 'DEATHS':
+
+Dickey-Fuller test:
+
+-> H0: Random walk process.
+
+-> H1: The process is stationary.
+
+```{r}
+df.test <- ur.df(stcovid$DEATHS, type = c('none'), lags = 0)
+summary((df.test))
+```
+Rejection interval for 5% (-Inf, -1.95)
+Test-statistics = -28.07
+It is inside of the Rejection Interval so we have to reject the null hypothesis H0 and we accept the alternative one H1: The process is stationary.
+
+To be sure that conclusions may be drawn we need to check whether there is no autocorrelation in residuals of the test.
+
+Breusch-Godfrey test:
+-> H0: Residuals are OK they are not autocorrelated.
+-> H1: There is autocorrelation of order 1,2,3,.. and we can not trust our test.
+
+```{r}
+resids_ <- df.test@testreg$residuals
+bgtest(resids_~1, order = 1)
+bgtest(resids_~1, order = 2)
+bgtest(resids_~1, order = 3) #<0.5% -> Autocorrelation
+bgtest(resids_~1, order = 4) #<0.5% -> Autocorrelation
+bgtest(resids_~1, order = 5) #<0.5% -> Autocorrelation
+```
+
+There is autocorrelation in the residuals, we can not trust our test, so we use Augmented DF test adding some lags.
+
+```{r}
+#adf.test performance
+adf.test<- ur.df(stcovid$DEATHS, type = c('none'), lags = 4)
+summary(adf.test)
+
+resids_ <- adf.test@testreg$residuals
+bgtest(resids_~1, order = 1)
+bgtest(resids_~1, order = 2)
+bgtest(resids_~1, order = 3) 
+bgtest(resids_~1, order = 4) 
+bgtest(resids_~1, order = 5)
+```
+
+We could not trust in the conclusions of the tests with only 1 lag.
+But with 4 lags we obtain valid test with not autocorrelation in our residuals.
+
+The next function confirms us that the proper number of lags to get rid of the autocorrelation of residuals is 4:
+
+```{r}
+source("function_testdf2.R")
+testdf2(variable = stcovid$DEATHS, test.type = 'nc', max.augmentations = 5, max.order = 5)
+```
+The adf inside the rejection interval and the p-value 0.01 for 4 lags confirms that we can reject the H0 and we can accept H1, our variable is Stationary.
+
+Let's see some other alternative tests.
+
+Phillips & Perron Unit Root Test:
+
+-> H0: Random walk process.
+
+-> H1: The process is stationary.
+
+```{r}
+pp.test.d <-ur.pp(stcovid$DEATHS, type =  c("Z-tau"), model = c("constant"))
+summary(pp.test.d)
+```
+Value of test-statistic, type: Z-tau  is: -26.858 
+
+Critical interval: (-Inf, -2.87)
+
+We reject H0, accept H1: process is stationary
+
+
+
+Kwiatkowski et al. Unit Root Test:
+
+-> H0: The process is stationary.
+
+-> H1: Random walk process
+```{r}
+kpps.test <- ur.kpss(stcovid$DEATHS, type = c('mu'))
+summary(kpps.test)
+```
+Value of test-statistic is: 0.379
+Critical interval: (0.463, +Inf)
+We can not reject H0: process is stationary.
+
+The three tests give has the same conclusion, our dependent variable is stationary.
+
+The same process is made for each independent variable:
+
+```{r, results = 'hide', fig.show='hide'}
+#Age group
+
+##0-17
+
+###ADF
+testdf2(variable = stcovid$ag017, test.type = 'nc', max.augmentations = 5, max.order = 5)
+#stationary with 3 lags in adf test
+
+###PP
+pp.test.d <-ur.pp(stcovid$ag017, type =  c("Z-tau"), model = c("constant"))
+summary(pp.test.d)
+#stationary
+
+###KPPS
+kpps.test <- ur.kpss(stcovid$ag017, type = c('mu'))
+summary(kpps.test)
+#stationary
+
+##18-49
+testdf2(variable = stcovid$ag1849, test.type = 'nc', max.augmentations = 5, max.order = 5)
+pp.test.d <-ur.pp(stcovid$ag1849, type =  c("Z-tau"), model = c("constant"))
+kpps.test <- ur.kpss(stcovid$ag1849, type = c('mu'))
+summary(pp.test.d)
+summary(kpps.test)
+#stationary
+
+##50-64
+testdf2(variable = stcovid$ag5064, test.type = 'nc', max.augmentations = 5, max.order = 5)
+pp.test.d <-ur.pp(stcovid$ag5064, type =  c("Z-tau"), model = c("constant"))
+kpps.test <- ur.kpss(stcovid$ag5064, type = c('mu'))
+summary(pp.test.d)
+summary(kpps.test)
+#stationary
+
+##+65
+testdf2(variable = stcovid$ag65, test.type = 'nc', max.augmentations = 5, max.order = 5)
+pp.test.d <-ur.pp(stcovid$ag65, type =  c("Z-tau"), model = c("constant"))
+kpps.test <- ur.kpss(stcovid$ag65, type = c('mu'))
+summary(pp.test.d)
+summary(kpps.test)
+#stationary
+```
+
+```{r, results = 'hide', fig.show='hide'}
+#Gender
+
+##Female
+testdf2(variable = stcovid$Female, test.type = 'nc', max.augmentations = 5, max.order = 5)
+pp.test.d <-ur.pp(stcovid$Female, type =  c("Z-tau"), model = c("constant"))
+kpps.test <- ur.kpss(stcovid$Female, type = c('mu'))
+summary(pp.test.d)
+summary(kpps.test)
+#stationary
+
+##Male
+testdf2(variable = stcovid$Male, test.type = 'nc', max.augmentations = 5, max.order = 5)
+pp.test.d <-ur.pp(stcovid$Male, type =  c("Z-tau"), model = c("constant"))
+kpps.test <- ur.kpss(stcovid$Male, type = c('mu'))
+summary(pp.test.d)
+summary(kpps.test)
+#stationary
+```
+
+```{r, results = 'hide', fig.show='hide'}
+#Race-Ethnicity
+
+##AIndianAlaska
+testdf2(variable = stcovid$AIndianAlaska, test.type = 'nc', max.augmentations = 5, max.order = 5)
+pp.test.d <-ur.pp(stcovid$AIndianAlaska, type =  c("Z-tau"), model = c("constant"))
+kpps.test <- ur.kpss(stcovid$AIndianAlaska, type = c('mu'))
+summary(pp.test.d)
+summary(kpps.test)
+#stationary
+
+##Asian
+testdf2(variable = stcovid$Asian, test.type = 'nc', max.augmentations = 5, max.order = 5)
+pp.test.d <-ur.pp(stcovid$Asian, type =  c("Z-tau"), model = c("constant"))
+kpps.test <- ur.kpss(stcovid$Asian, type = c('mu'))
+summary(pp.test.d)
+summary(kpps.test)
+#stationary
+
+##Black
+testdf2(variable = stcovid$Black, test.type = 'nc', max.augmentations = 7, max.order = 7)
+pp.test.d <-ur.pp(stcovid$Black, type =  c("Z-tau"), model = c("constant"))
+kpps.test <- ur.kpss(stcovid$Black, type = c('mu'))
+summary(pp.test.d)
+summary(kpps.test)
+#stationary
+
+##Latino
+testdf2(variable = stcovid$Latino, test.type = 'nc', max.augmentations = 7, max.order = 7)
+pp.test.d <-ur.pp(stcovid$Latino, type =  c("Z-tau"), model = c("constant"))
+kpps.test <- ur.kpss(stcovid$Latino, type = c('mu'))
+summary(pp.test.d)
+summary(kpps.test)
+#stationary
+
+##MultiR
+testdf2(variable = stcovid$MultiR, test.type = 'nc', max.augmentations = 5, max.order = 5)
+pp.test.d <-ur.pp(stcovid$MultiR, type =  c("Z-tau"), model = c("constant"))
+kpps.test <- ur.kpss(stcovid$MultiR, type = c('mu'))
+summary(pp.test.d)
+summary(kpps.test)
+#stationary
+
+##HawaiianPacifIs
+testdf2(variable = stcovid$HawaiianPacifIs, test.type = 'nc', max.augmentations = 5, max.order = 5)
+pp.test.d <-ur.pp(stcovid$HawaiianPacifIs, type =  c("Z-tau"), model = c("constant"))
+kpps.test <- ur.kpss(stcovid$HawaiianPacifIs, type = c('mu'))
+summary(pp.test.d)
+summary(kpps.test)
+#stationary
+
+##White
+testdf2(variable = stcovid$White, test.type = 'nc', max.augmentations = 7, max.order = 7)
+pp.test.d <-ur.pp(stcovid$White, type =  c("Z-tau"), model = c("constant"))
+kpps.test <- ur.kpss(stcovid$White, type = c('mu'))
+summary(pp.test.d)
+summary(kpps.test)
+#stationary
+```
+
+We have proved that all our variables are stationary.
+
+#### GTS approach for selecting variables
+
+Let's use the auto.ardl function to have a first idea about which variables and lags could be significant and useful for our model.
+
+Using only age group variables:
+```{r, results = 'hide', fig.show='hide'}
+ardl_auto_AG <- ardl::auto.ardl(DEATHS ~ ag017+ag1849+ag5064+ag65, data=stcovid, ymax=10, xmax=c(10,10,10,10), verbose=TRUE, ic="aic")
+```
+```{r}
+summary(ardl_auto_AG)
+```
+
+Using only gender variables:
+
+```{r, results = 'hide', fig.show='hide'}
+ardl_auto_G <- ardl::auto.ardl(DEATHS ~ Male+Female, data=stcovid, ymax=10, xmax=c(10,10), verbose=TRUE, ic="aic")
+```
+
+```{r}
+summary(ardl_auto_G)
+```
+
+It shows that neither the gender or the lag of the variable is significant for the number of deaths.
+
+Using only race-ethnicity variables:
+```{r, results = 'hide', fig.show='hide'}
+ardl_auto_RE <- ardl::auto.ardl(DEATHS ~ AIndianAlaska+Asian+Black+Latino+MultiR+HawaiianPacifIs+White, data=stcovid, ymax=10, xmax=c(10,10,10,10,10,10,10), verbose=TRUE, ic="aic")
+```
+
+```{r}
+summary(ardl_auto_RE)
+```
+
+Using all the variables:
+```{r, results = 'hide', fig.show='hide'}
+ardl_auto <- ardl::auto.ardl(DEATHS ~ ag017+ag1849+ag5064+ag65+AIndianAlaska+Asian+Black+Female+Latino+Male+MultiR+HawaiianPacifIs+White , data=stcovid, ymax=10, xmax=c(10,10,10,10,10,10,10,10,10,10,10,10,10), verbose=TRUE, ic="aic")
+```
+
+```{r}
+summary(ardl_auto)
+```
+
+It gives the same significant variables than ardl_auto_AG when taking into consideration all the variables.
+
+Let's try to improve the models auto.ardl function has proposed by dropping the insignificant variables.
+
+- AG model
+
+```{r}
+ardl_AG_all <- dynlm(DEATHS ~ L(DEATHS,c(1:10)) + ag017 + ag1849 + ag5064 + ag65 + L(ag65,c(1:8)), data = zoo(stcovid, order.by = index(stcovid)))
+
+ardl_AG <- dynlm(DEATHS ~ L(DEATHS,c(1,2,4,5,6,7,8,9)) + L(ag65,c(2,4,5,6,8)), data = zoo(stcovid[-1], order.by = index(stcovid[-1])))
+
+summary(ardl_AG)
+```
+
+Check if this new ardl model is better than the one auto.ardl has proposed:
+
+```{r}
+anova(ardl_AG_all,ardl_AG)
+```
+Test-statistic=0.98
+
+p-value=45.6% > 5%
+
+H0: all variables we have removed are jointly insignificant.
+
+We cannot reject the null hypothesis -> Model2 is better than Model1
+
+
+Autocorrelation in residuals for ARDL lead to inconsistency of estimators. So, let's check if this model has autocorrelation issues.
+
+```{r, results = 'hide', fig.show='hide'}
+bgtest(residuals(ardl_AG)~1, order = 1)
+bgtest(residuals(ardl_AG)~1, order = 2)
+bgtest(residuals(ardl_AG)~1, order = 3)
+bgtest(residuals(ardl_AG)~1, order = 4)
+bgtest(residuals(ardl_AG)~1, order = 5)
+```
+The model is free of autocorrelation in its residuals so, we can trust on it.
+
+
+- RE model
+
+```{r}
+ardl_RE_all <- dynlm(DEATHS ~ L(DEATHS,c(1:10)) + AIndianAlaska + Asian + Black + Latino + MultiR + HawaiianPacifIs + White + L(White,c(1:6)), data = zoo(stcovid, order.by = index(stcovid)))
+
+ardl_RE <- dynlm(DEATHS ~ L(DEATHS,c(1,2,4,5,6,7,8,9)) + L(White,c(4,5)), data = zoo(stcovid[-1], order.by = index(stcovid[-1])))
+
+summary(ardl_RE)
+```
+
+Check which model is better:
+
+```{r}
+anova(ardl_RE_all,ardl_RE)
+```
+Test-statistic=0.92
+
+p-value=52.9% > 5%
+
+H0: all variables we removed are jointly insignificant
+
+We cannot reject the null hypothesis -> Model2 is better than Model1
+
+
+Let's check if this model has autocorrelation issues.
+
+```{r, results = 'hide', fig.show='hide'}
+bgtest(residuals(ardl_RE)~1, order = 1)
+bgtest(residuals(ardl_RE)~1, order = 2)
+bgtest(residuals(ardl_RE)~1, order = 3)
+bgtest(residuals(ardl_RE)~1, order = 4)
+bgtest(residuals(ardl_RE)~1, order = 5)
+```
+The model is free of autocorrelation in its residuals so we can trust on it.
+
+#### Fitted values
+
+Let's plot our models with the actual data.
+
+```{r}
+plot.zoo(merge(as.zoo(stcovid$DEATHS),as.zoo(stcovid$DEATHS), fitted(ardl_AG),
+               fitted(ardl_RE)), screens = c(1,2,1,2),
+         col = c(1, 1, 2, 3), xlab = "Time",
+         ylab = c("ardl_AG", "ardl_RE"),
+         main = "Differenciated fitted values")
+legend(-150,0.25, "Differenciated data", lty = 1, bty="n")
+```
+
+Let's do the discrete integration or inverse of differencing, in order to compare our models with our original data:
+
+```{r, fig.show='hide'}
+x1 <- democases$DEATHS[12]
+
+results <- democases[-c(1:11)]$DEATHS
+results$modelAG <- as.xts(diffinv(as.xts(fitted(ardl_AG)), xi = x1), order.by=index(democases[-c(1:11)]))
+results$modelRE <- as.xts(diffinv(as.xts(fitted(ardl_RE)), xi = x1), order.by=index(democases[-c(1:11)]))
+
+colors_ <- c("black", "red", "green")
+plot.xts(results, plot.type = "single",
+     col = colors_,   # colors for subsequent lines
+     ylab = "Daily number of deaths", # axes labels
+     main = "Real data Vs Model data") # title above the plot
+```
+
+```{r}
+addLegend("topleft", names(results), text.col = colors_)
+```
+
+
+#### Accuaracy of the model
+
+```{r}
+regressionMetrics <- function(real, predicted) {
+  MSE <- mean((real - predicted)^2) # Mean Squera Error
+  RMSE <- sqrt(MSE) # Root Mean Square Error
+  MAE <- mean(abs(real - predicted)) # Mean Absolute Error
+  MAPE <- mean(abs(real - predicted)/abs(real)) # Mean Absolute Percentage Error
+  MedAE <- median(abs(real - predicted)) # Median Absolute Error
+  TSS <- sum((real - mean(real))^2) # Total Sum of Squares
+  RSS <- sum((predicted - real)^2)  # Explained Sum of Squares
+  R2 <- 1 - RSS/TSS
+  
+  result <- data.frame(MSE, RMSE, MAE, MAPE, MedAE, R2)
+  return(result)
+}
+
+regressionMetrics(results$DEATHS[-385], results$modelAG[-385])
+regressionMetrics(results$DEATHS[-385], results$modelRE[-385])
+```
+
+This metrics prove that the ardl_AG model is better than the ardl_RE model. A R2-Correlation of 80.2% is a good indicator, plus a MAPE=0.27 tells as that the accuracy of our model is around the 73% which is also good.
+
+In the next section we will check is the ARIMA models are able to improve these results.
+
+#### Secondary hypothesis
+From the ARDL analysis we can conclude that the secondary hypothesis is confirmed:
+
++65 age Covid cases is the most significant variable which affects to the number of deaths, particularly the cases which happened 2,4,5,6 and 8 days before will significantly affect to the daily number of deaths. These delayed days may have sense since they could reflect the average time since the virus is detected in an old person until it produces complications, even the death.
+
+About the Gender, it was concluded that they are not significant for the daily deaths, the cases in men or women do not affect to the daily number of deaths.
+
+The race-ethnicity group which turned out to be significant for the daily number of deaths was White people covid cases, particularly the cases which happened 4 and 5 days before. The only reason we could give to this fact is that the White people group is the one with biggest population and thats why their cases lead to more number of daily deaths.
+
+
+## Conclusion
+
+Our forecast on short time period seems to be more accurate
+However the Model which performs better in the sample will not necessarily be the best for forecasting
+
+## Division of the work
+
+Study and analysis of ARDL models + Secondary hypothesis made by Alberto Delgado Lopez
+Study and analysis of ARIMA models + Main hypothesis made by Elbrus Gasimov

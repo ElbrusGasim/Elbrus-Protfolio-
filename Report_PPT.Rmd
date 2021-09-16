@@ -1,0 +1,70 @@
+---
+title: "Movie Recommendation"
+subtitle: "Presenters: Elbrus Gasimov, Laura Florencia, Gunneet Singh"
+output: 
+  powerpoint_presentation:
+    reference_doc: Report_PPT_Reference.pptx
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## Introduction
+
+* Movie recommendation model recommends a list of movies based on the user's watch history. Model is based on the ratings. 
+* Development data is gathered from the IMDB database. Data includes different user's watch history and ratings they gave to the movies.
+* Model is developed in R-shiny. The technique is based on the average rating a movie has received.
+
+
+
+## Model Data
+
+IMDB model data is used to develop and test the model. Data can be directly sourced from the IMDB website. Data provided to develop the model contains the following fields:
+
+* Movie ID: Unique movie ID assigned to each individual movie
+* User ID: Users who watched the movies and provided ratings
+* Movie Name: Movie name along with the year of release
+* Genre: Genre of the movie
+* Rating: Ratings provided by the users
+
+Data is saved in the two different CSV files:
+
+* movies.csv
+* ratings.csv
+
+
+
+## Code Snippet
+
+![](images/Code_1.PNG)
+
+## Code Snippet
+
+![](images/Code_2.PNG)
+
+## Code Snippet
+
+![](images/Code_3.PNG)
+
+## Code Snippet
+
+![](images/Code_4.PNG)
+
+## Code Snippet
+
+![](images/Code_5.PNG)
+
+## Dashboard Output
+
+![](images/Dashboard_output.PNG)
+
+
+
+## Limitation
+
+Below is the list of the limitations:
+
+* Model takes data in the defined format only. Data should be structured. Unstructured data may gives errors in the model.
+* Model provides only 10 movie recommendations. Recommendation beyond 10 movies is limited.
+

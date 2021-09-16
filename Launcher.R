@@ -1,0 +1,50 @@
+##### Install theses packages on first run ####
+
+# install.packages("shiny")
+# install.packages("tidyquant")
+# install.packages("dplyr")
+# install.packages("shinythemes")
+# install.packages("zoo")
+# install.packages("recommenderlab")
+# install.packages("data.table")
+# install.packages("reshape2")
+# install.packages("tidyr")
+# install.packages("zoo")
+# install.packages("shiny")
+# install.packages("tidyquant")
+# install.packages("dplyr")
+# install.packages("shinythemes")
+# install.packages("dtplyr")
+# install.packages("dplyr")
+# install.packages("R6")
+#install.packages("PBSmodelling")
+# install.packages("rmarkdown")
+# install.packages("shinybusy")
+# install.packages("shinycssloaders")
+
+##############################################
+
+# You need to install tinytex for generating teh PDF
+# tinytex::install_tinytex()
+
+library(shiny)
+library(tidyquant)
+library(dplyr)
+library(shinythemes)
+library(zoo)
+library(recommenderlab)
+library(data.table)
+library(reshape2)
+library(tidyr)
+library(dtplyr)
+library(dplyr)
+library(R6)
+library(PBSmodelling)
+library(rmarkdown)
+library(shinybusy)
+library(shinycssloaders)
+library(tinytex)
+
+setwd(dirname(rstudioapi::getSourceEditorContext()$path))
+
+runApp("app")

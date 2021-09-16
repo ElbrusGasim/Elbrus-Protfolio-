@@ -1,0 +1,105 @@
+---
+title: "Movie Recommendation Dashboard"
+runtime: shiny
+output: 
+  html_document
+---
+# Using Shiny And R Markdown.
+### *TOOL#4, TOOL#5*.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### R Markdown Shiny scripting.
+This R Markdown script is used to generate Dashboard reports for Movie Recommendataion system.
+&nbsp; 
+
+&nbsp;
+
+&nbsp;
+
+
+```{r echo=FALSE, message = FALSE, warning = FALSE}
+## R libraries.
+library(utils)
+library(reshape2)
+library(recommenderlab)
+
+library(ggplot2)                       
+library(data.table)
+library(reshape2)
+```
+
+## Movie Ratings Dashboard Reports.
+&nbsp; 
+
+&nbsp;
+
+&nbsp;
+
+
+```{r echo=FALSE, message = FALSE, warning = FALSE}
+rep_rating_data <-read.csv("ratings.csv")
+
+ratingMatrix <- dcast(rep_rating_data, userId~movieId, value.var = "rating", na.rm=FALSE)
+ratingMatrix <- as.matrix(ratingMatrix[,-1]) #remove userIds
+#Convert rating matrix into a recommenderlab sparse matrix
+ratingMatrix <- as(ratingMatrix, "realRatingMatrix")
+```
+
+### Similarity Matrix of User Ratings
+```{r echo=FALSE, message = FALSE, warning = FALSE}
+similarity_mat <- similarity(ratingMatrix[1:4, ],
+                               method = "cosine",
+                               which = "users")
+
+image(as.matrix(similarity_mat), main = "User's Rating Similarities")
+```
+&nbsp; 
+
+&nbsp;
+
+&nbsp;
+
+
+### Heat Map of Movie Ratings of first 25 users.
+```{r echo=FALSE, message = FALSE, warning = FALSE}
+image(ratingMatrix[1:20, 1:25], axes = FALSE, main = "Heatmap of first 25 x 25 Movie Ratings")
+
+movie_ratings <- ratingMatrix[rowCounts(ratingMatrix) > 50,
+                             colCounts(ratingMatrix) > 50]
+```
+&nbsp; 
+
+&nbsp;
+
+&nbsp;
+
+
+### Heat Map of Movie Ratings for Top Users.
+```{r echo=FALSE, message = FALSE, warning = FALSE}
+minimum_movies<- quantile(rowCounts(movie_ratings), 0.98)
+minimum_users <- quantile(colCounts(movie_ratings), 0.98)
+image(movie_ratings[rowCounts(movie_ratings) > minimum_movies,
+                     colCounts(movie_ratings) > minimum_users],
+                     main = "Heatmap of Top Users and Movies Ratings")
+```
+&nbsp; 
+
+&nbsp;
+
+&nbsp;
+
+
+### Map of Normalised Ratings.
+```{r echo=FALSE, message = FALSE, warning = FALSE}
+normalized_ratings <- normalize(movie_ratings)
+#sum(rowMeans(normalized_ratings) > 0.00001)
+
+image(normalized_ratings[rowCounts(normalized_ratings) > minimum_movies,
+                          colCounts(normalized_ratings) > minimum_users],
+main = "Normalized Ratings of the Top Users")
+```
+
+
